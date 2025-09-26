@@ -13,6 +13,7 @@ import {
   getOrCreateTransport,
   getSessionStats,
 } from "./mcp-handlers.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { vectorStoreUpdater } from "./webhookHandler.js";
 
 export function createExpressApp(): express.Application {
@@ -150,48 +151,119 @@ export function createExpressApp(): express.Application {
 
   // Main MCP endpoint
   app.post("/mcp", mcpAuthMiddleware, validateRequestBody, async (req, res) => {
+    const startTime = Date.now();
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
     try {
-      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+      logger.info("MCP request received", {
+        method: req.body?.method,
+        sessionId,
+        hasSessionId: !!sessionId,
+        ip: req.ip,
+        userAgent: req.headers["user-agent"]?.substring(0, 100),
+      });
+
+      // Set a response timeout for serverless environments
+      const requestTimeout = setTimeout(() => {
+        if (!res.headersSent) {
+          logger.error("MCP request timeout", {
+            method: req.body?.method,
+            sessionId,
+            duration: Date.now() - startTime,
+          });
+          res.status(504).json({
+            jsonrpc: "2.0",
+            error: {
+              code: -32603,
+              message: "Request timeout - operation took too long",
+            },
+            id: req.body?.id || null,
+          });
+        }
+      }, 300000); // 300 second timeout
+
       const transport = getOrCreateTransport(sessionId, req.body);
 
       if (!transport) {
+        clearTimeout(requestTimeout);
         logger.warn("Failed to get or create transport", {
           sessionId,
           method: req.body?.method,
           ip: req.ip,
+          isInitRequest: req.body ? isInitializeRequest(req.body) : false,
         });
 
         return res.status(400).json({
           jsonrpc: "2.0",
           error: {
             code: -32000,
-            message:
-              "Unable to establish MCP session. Ensure this is a valid initialize request or provide a valid session ID.",
+            message: sessionId
+              ? "Session not found. Please initialize a new session."
+              : "Unable to establish MCP session. Ensure this is a valid initialize request.",
+            details: {
+              sessionId,
+              method: req.body?.method,
+              expectedFlow:
+                "Send an initialize request without session ID to create a new session",
+            },
           },
           id: req.body?.id || null,
         });
       }
 
-      // Connect server to transport if needed
-      if (
-        !transport.sessionId &&
-        req.body &&
-        req.body.method === "initialize"
-      ) {
-        const server = await createMcpServer();
-        await server.connect(transport);
-        logger.info("MCP server connected to new transport");
+      // Connect server to transport if needed (only for initialize requests)
+      if (!transport.sessionId && req.body?.method === "initialize") {
+        try {
+          logger.info("Creating and connecting MCP server to transport");
+          const server = await createMcpServer();
+          await server.connect(transport);
+          logger.info("MCP server connected to new transport successfully");
+        } catch (connectError) {
+          clearTimeout(requestTimeout);
+          logger.error("Failed to connect MCP server to transport", {
+            error:
+              connectError instanceof Error
+                ? connectError.message
+                : "Unknown error",
+            stack:
+              connectError instanceof Error ? connectError.stack : undefined,
+          });
+
+          return res.status(500).json({
+            jsonrpc: "2.0",
+            error: {
+              code: -32603,
+              message: "Failed to initialize MCP server connection",
+            },
+            id: req.body?.id || null,
+          });
+        }
       }
 
-      // Handle the request
-      await transport.handleRequest(req, res, req.body);
+      // Handle the request with timeout protection
+      try {
+        await transport.handleRequest(req, res, req.body);
+        clearTimeout(requestTimeout);
+
+        const duration = Date.now() - startTime;
+        logger.info("MCP request completed", {
+          method: req.body?.method,
+          sessionId: transport.sessionId,
+          duration: `${duration}ms`,
+        });
+      } catch (handleError) {
+        clearTimeout(requestTimeout);
+        throw handleError;
+      }
     } catch (error) {
+      const duration = Date.now() - startTime;
       logger.error("MCP request handling error", {
         error: error instanceof Error ? error.message : "Unknown error",
         stack: error instanceof Error ? error.stack : undefined,
-        sessionId: req.headers["mcp-session-id"],
+        sessionId,
         method: req.body?.method,
         ip: req.ip,
+        duration: `${duration}ms`,
       });
 
       if (!res.headersSent) {

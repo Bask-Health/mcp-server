@@ -7,22 +7,25 @@ import { validateOpenAIClient, VECTOR_STORE_ID } from "./openai-client.js";
 import { SearchResult, FetchResponse, SessionInfo } from "./types.js";
 import { logger } from "./logger.js";
 
-// Session management
+// Session management - simplified for serverless compatibility
 const transports: Map<string, StreamableHTTPServerTransport> = new Map();
 const sessions: Map<string, SessionInfo> = new Map();
 
-// Clean up stale sessions every 5 minutes
-setInterval(() => {
-  const now = new Date();
-  const staleThreshold = 30 * 60 * 1000; // 30 minutes
+// Only run cleanup in non-serverless environments
+if (process.env.NODE_ENV === 'development') {
+  // Clean up stale sessions every 5 minutes (only in long-running environments)
+  setInterval(() => {
+    const now = new Date();
+    const staleThreshold = 30 * 60 * 1000; // 30 minutes
 
-  sessions.forEach((session, sessionId) => {
-    if (now.getTime() - session.lastActivity.getTime() > staleThreshold) {
-      logger.info("Cleaning up stale session", { sessionId });
-      cleanupSession(sessionId);
-    }
-  });
-}, 5 * 60 * 1000);
+    sessions.forEach((session, sessionId) => {
+      if (now.getTime() - session.lastActivity.getTime() > staleThreshold) {
+        logger.info("Cleaning up stale session", { sessionId });
+        cleanupSession(sessionId);
+      }
+    });
+  }, 5 * 60 * 1000);
+}
 
 function cleanupSession(sessionId: string): void {
   try {
@@ -42,12 +45,13 @@ function cleanupSession(sessionId: string): void {
 }
 
 /**
- * Handle search tool execution with improved error handling
+ * Handle search tool execution with improved error handling and timeout protection
  */
 async function handleSearch(args: {
   query: string;
 }): Promise<{ content: any[] }> {
   const { query } = args;
+  const startTime = Date.now();
 
   if (!query || !query.trim()) {
     logger.warn("Empty search query provided");
@@ -69,18 +73,31 @@ async function handleSearch(args: {
     }
 
     logger.info("Executing vector store search", {
-      query,
+      query: query.substring(0, 100), // Log only first 100 chars
       vectorStoreId: VECTOR_STORE_ID,
     });
 
-    const response = await openai.vectorStores.search(VECTOR_STORE_ID, {
+    // Add timeout protection for serverless environments
+    const searchPromise = openai.vectorStores.search(VECTOR_STORE_ID, {
       query,
       rewrite_query: true,
     });
 
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new Error("Search timeout after 25 seconds")),
+        25000
+      )
+    );
+
+    const response = (await Promise.race([
+      searchPromise,
+      timeoutPromise,
+    ])) as any;
     const results: SearchResult[] = [];
 
-    for (let i = 0; i < response.data.length; i++) {
+    for (let i = 0; i < Math.min(response.data.length, 10); i++) {
+      // Limit to 10 results
       const item = response.data[i];
 
       // Extract text content safely
@@ -102,10 +119,10 @@ async function handleSearch(args: {
         textContent = "No content available";
       }
 
-      // Create a snippet from content
+      // Create a snippet from content (shorter for serverless)
       const textSnippet =
-        textContent.length > 200
-          ? textContent.slice(0, 200) + "..."
+        textContent.length > 150
+          ? textContent.slice(0, 150) + "..."
           : textContent;
 
       const result: SearchResult = {
@@ -120,9 +137,11 @@ async function handleSearch(args: {
       results.push(result);
     }
 
+    const duration = Date.now() - startTime;
     logger.info("Search completed successfully", {
-      query,
+      query: query.substring(0, 50),
       resultCount: results.length,
+      duration: `${duration}ms`,
     });
 
     return {
@@ -134,9 +153,14 @@ async function handleSearch(args: {
       ],
     };
   } catch (error) {
+    const duration = Date.now() - startTime;
     const errorMessage =
       error instanceof Error ? error.message : "Unknown search error";
-    logger.error("Search operation failed", { query, error: errorMessage });
+    logger.error("Search operation failed", {
+      query: query.substring(0, 50),
+      error: errorMessage,
+      duration: `${duration}ms`,
+    });
     throw new Error(`Search failed: ${errorMessage}`);
   }
 }
@@ -317,52 +341,88 @@ export function getOrCreateTransport(
   requestBody?: any
 ): StreamableHTTPServerTransport | null {
   try {
+    logger.debug("Transport request", {
+      sessionId,
+      hasBody: !!requestBody,
+      isVercel: !!process.env.VERCEL,
+    });
+
     // Handle existing session
     if (sessionId && transports.has(sessionId)) {
+      const transport = transports.get(sessionId);
       const session = sessions.get(sessionId);
-      if (session) {
+
+      if (transport && session) {
+        // Update activity timestamp
         session.lastActivity = new Date();
         logger.debug("Reusing existing transport", { sessionId });
-        return transports.get(sessionId) || null;
+        return transport;
+      } else {
+        // Clean up invalid session
+        logger.warn("Found invalid session, cleaning up", { sessionId });
+        cleanupSession(sessionId);
       }
     }
 
     // Handle new initialization request
     if (!sessionId && requestBody && isInitializeRequest(requestBody)) {
-      logger.info("Creating new MCP transport for initialization");
-
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (newSessionId) => {
-          logger.info("MCP session initialized", { sessionId: newSessionId });
-
-          // Store the transport and session info
-          transports.set(newSessionId, transport);
-          sessions.set(newSessionId, {
-            id: newSessionId,
-            createdAt: new Date(),
-            lastActivity: new Date(),
-          });
-        },
+      logger.info("Creating new MCP transport for initialization", {
+        method: requestBody.method,
+        isVercel: !!process.env.VERCEL,
       });
 
-      // Set up cleanup handler
-      transport.onclose = () => {
-        if (transport.sessionId) {
-          logger.info("Transport closed, cleaning up session", {
-            sessionId: transport.sessionId,
-          });
-          cleanupSession(transport.sessionId);
-        }
-      };
+      try {
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (newSessionId) => {
+            logger.info("MCP session initialized", {
+              sessionId: newSessionId,
+              transport: "created",
+            });
 
-      return transport;
+            // Store the transport and session info
+            transports.set(newSessionId, transport);
+            sessions.set(newSessionId, {
+              id: newSessionId,
+              createdAt: new Date(),
+              lastActivity: new Date(),
+            });
+          },
+        });
+
+        // Set up cleanup handler (Not reliable in serverless)
+        transport.onclose = () => {
+          if (transport.sessionId) {
+            logger.info("Transport closed, cleaning up session", {
+              sessionId: transport.sessionId,
+            });
+            cleanupSession(transport.sessionId);
+          }
+        };
+
+        // In serverless environments, clean up old sessions immediately to free memory
+        if (process.env.VERCEL) {
+          cleanupOldSessions();
+        }
+
+        logger.debug("Transport created successfully");
+        return transport;
+      } catch (error) {
+        logger.error("Failed to create transport", {
+          error: error instanceof Error ? error.message : "Unknown error",
+          stack: error instanceof Error ? error.stack : undefined,
+        });
+        return null;
+      }
     }
 
-    // Invalid request
+    // Log what we received for debugging
     logger.warn("Cannot create or find transport", {
       hasSessionId: !!sessionId,
+      sessionExists: sessionId ? transports.has(sessionId) : false,
+      hasRequestBody: !!requestBody,
       isInitRequest: requestBody ? isInitializeRequest(requestBody) : false,
+      requestMethod: requestBody?.method,
     });
 
     return null;
@@ -370,8 +430,36 @@ export function getOrCreateTransport(
     logger.error("Error in getOrCreateTransport", {
       sessionId,
       error: error instanceof Error ? error.message : "Unknown error",
+      stack: error instanceof Error ? error.stack : undefined,
     });
     return null;
+  }
+}
+
+// Helper function to clean up old sessions in serverless environments
+function cleanupOldSessions(): void {
+  if (sessions.size > 10) {
+    // Keep max 10 sessions in serverless
+    const now = new Date();
+    const sessionsToCleanup: string[] = [];
+
+    sessions.forEach((session, sessionId) => {
+      const ageMinutes =
+        (now.getTime() - session.lastActivity.getTime()) / (1000 * 60);
+      if (ageMinutes > 10) {
+        // Cleanup sessions older than 10 minutes
+        sessionsToCleanup.push(sessionId);
+      }
+    });
+
+    sessionsToCleanup.forEach(cleanupSession);
+
+    if (sessionsToCleanup.length > 0) {
+      logger.info("Cleaned up old sessions", {
+        count: sessionsToCleanup.length,
+        remaining: sessions.size,
+      });
+    }
   }
 }
 
