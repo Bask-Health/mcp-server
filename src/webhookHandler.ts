@@ -6,32 +6,81 @@ import path from "path";
 import fs from "fs";
 import { promisify } from "util";
 import { EventEmitter } from "events";
-import dotenv from "dotenv";
-import { VECTOR_STORE_ID } from "./index.js";
+import { config as baseConfig } from "./config.js";
+import { VECTOR_STORE_ID, logger, openaiClient } from "./index.js";
 import { convertMdxToMd } from "./convertMdxContentToMd.js";
 
-dotenv.config();
 let encoder = new TextEncoder();
 
-// Configuration
-const config = {
-  githubToken: process.env.GITHUB_TOKEN!,
-  githubWebhookSecret: process.env.GITHUB_WEBHOOK_SECRET!,
-  openaiApiKey: process.env.OPENAI_API_KEY!,
-  tempDir: process.env.TEMP_DIR || "/tmp/webhook-files",
-  maxConcurrentJobs: parseInt(process.env.MAX_CONCURRENT_JOBS || "3"),
-  queueMaxSize: parseInt(process.env.QUEUE_MAX_SIZE || "100"),
-  batchSize: parseInt(process.env.BATCH_SIZE || "10"),
-  batchTimeout: parseInt(process.env.BATCH_TIMEOUT_MS || "30000"), // 30 seconds
-  rateLimitPerMinute: parseInt(process.env.RATE_LIMIT_PER_MINUTE || "20"),
-  rateLimitWindow: parseInt(process.env.RATE_LIMIT_WINDOW_MS || "60000"), // 1 minute
+// Webhook-specific configuration extending the base config
+interface WebhookConfig {
+  github: {
+    token: string;
+    webhookSecret: string;
+  };
+  processing: {
+    tempDir: string;
+    maxConcurrentJobs: number;
+    queueMaxSize: number;
+    batchSize: number;
+    batchTimeout: number;
+    rateLimitPerMinute: number;
+    rateLimitWindow: number;
+  };
+}
+
+function validateWebhookEnvVar(
+  name: string,
+  value: string | undefined
+): string {
+  if (!value) {
+    throw new Error(`Missing required webhook environment variable: ${name}`);
+  }
+  return value;
+}
+
+const webhookConfig: WebhookConfig = {
+  github: {
+    token: validateWebhookEnvVar("GITHUB_TOKEN", process.env.GITHUB_TOKEN),
+    webhookSecret: validateWebhookEnvVar(
+      "GITHUB_WEBHOOK_SECRET",
+      process.env.GITHUB_WEBHOOK_SECRET
+    ),
+  },
+  processing: {
+    tempDir:
+      process.env.TEMP_DIR ||
+      (process.platform === "win32"
+        ? "C:\\temp\\webhook-files"
+        : "/tmp/webhook-files"),
+    maxConcurrentJobs: parseInt(process.env.MAX_CONCURRENT_JOBS || "3", 10),
+    queueMaxSize: parseInt(process.env.QUEUE_MAX_SIZE || "100", 10),
+    batchSize: parseInt(process.env.BATCH_SIZE || "10", 10),
+    batchTimeout: parseInt(process.env.BATCH_TIMEOUT_MS || "30000", 10), // 30 seconds
+    rateLimitPerMinute: parseInt(process.env.RATE_LIMIT_PER_MINUTE || "20", 10),
+    rateLimitWindow: parseInt(process.env.RATE_LIMIT_WINDOW_MS || "60000", 10), // 1 minute
+  },
 };
 
-const octokit = new Octokit({ auth: config.githubToken });
-const openai = new OpenAI({ apiKey: config.openaiApiKey });
+// Combine configurations for easy access
+const config = {
+  ...baseConfig,
+  webhook: webhookConfig,
+};
 
-if (!fs.existsSync(config.tempDir)) {
-  fs.mkdirSync(config.tempDir, { recursive: true });
+// Log configuration initialization
+logger.info("Webhook configuration loaded", {
+  tempDir: config.webhook.processing.tempDir,
+  maxConcurrentJobs: config.webhook.processing.maxConcurrentJobs,
+  queueMaxSize: config.webhook.processing.queueMaxSize,
+  batchSize: config.webhook.processing.batchSize,
+});
+
+const octokit = new Octokit({ auth: config.webhook.github.token });
+const openai = openaiClient!;
+
+if (!fs.existsSync(config.webhook.processing.tempDir)) {
+  fs.mkdirSync(config.webhook.processing.tempDir, { recursive: true });
 }
 
 export const SUPPORTED_EXTENSIONS = new Set([
@@ -565,7 +614,7 @@ export class BatchProcessor {
     content: string
   ): Promise<string> {
     const tempFilePath = path.join(
-      config.tempDir,
+      config.webhook.processing.tempDir,
       `${path.basename(filename)}`
     );
     await promisify(fs.writeFile)(tempFilePath, content, "utf-8");
@@ -769,11 +818,16 @@ class OpenAIVectorStoreUpdater {
 
       // Verify GitHub signature
       if (
-        !this.verifySignature(config.githubWebhookSecret, signature, payload)
+        !this.verifySignature(
+          config.webhook.github.webhookSecret,
+          signature,
+          payload
+        )
       ) {
         console.warn(`Invalid signature from IP: ${clientIp}`);
         return;
       }
+      logger.info("Body:", req.body);
       const webhookPayload = JSON.parse(req.body.payload) as WebhookPayload;
       // Only process main branch changes
       if (webhookPayload.ref && !webhookPayload.ref.endsWith("/main")) {
@@ -827,13 +881,13 @@ class OpenAIVectorStoreUpdater {
       res.json({
         queue: stats,
         rateLimit: {
-          perMinute: config.rateLimitPerMinute,
-          windowMs: config.rateLimitWindow,
+          perMinute: config.webhook.processing.rateLimitPerMinute,
+          windowMs: config.webhook.processing.rateLimitWindow,
         },
         batch: {
-          size: config.batchSize,
-          timeoutMs: config.batchTimeout,
-          maxConcurrent: config.maxConcurrentJobs,
+          size: config.webhook.processing.batchSize,
+          timeoutMs: config.webhook.processing.batchTimeout,
+          maxConcurrent: config.webhook.processing.maxConcurrentJobs,
         },
       });
     } catch (error) {
@@ -843,7 +897,10 @@ class OpenAIVectorStoreUpdater {
   }
 }
 
-const jobQueue = new JobQueue(config.maxConcurrentJobs, config.queueMaxSize);
+const jobQueue = new JobQueue(
+  config.webhook.processing.maxConcurrentJobs,
+  config.webhook.processing.queueMaxSize
+);
 export const vectorStoreUpdater = new OpenAIVectorStoreUpdater(jobQueue);
 
 // Queue event listeners
