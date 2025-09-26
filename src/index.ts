@@ -6,8 +6,15 @@ import { createExpressApp } from "./express-server.js";
 export { logger };
 export { openaiClient, VECTOR_STORE_ID } from "./openai-client.js";
 
+// Create the Express app for Vercel (serverless) or local development
+const app = createExpressApp();
+
+// Export the app as default for Vercel
+export default app;
+
 /**
- * Main application entry point
+ * Main application entry point for local development
+ * Only runs when this file is executed directly (not imported)
  */
 async function main(): Promise<void> {
   try {
@@ -17,13 +24,14 @@ async function main(): Promise<void> {
       corsOrigin: config.api.corsOrigin,
     });
 
-    // Create and configure the Express application
-    const app = createExpressApp();
-
-    // Start the server
+    // Start the server (only for local development)
     const server = app.listen(config.api.port, () => {
-      logger.info(`Server listening on port ${config.api.port}`, {
+      logger.info(`🚀 Server listening on port ${config.api.port}`, {
         environment: config.environment.nodeEnv,
+        urls: [
+          `http://localhost:${config.api.port}`,
+          `http://127.0.0.1:${config.api.port}`,
+        ],
       });
     });
 
@@ -46,6 +54,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 }
-const app = await main();
 
-export default app;
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error) => {
+    logger.error("Unhandled error in main", {
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+    process.exit(1);
+  });
+}

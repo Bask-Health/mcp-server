@@ -111,6 +111,14 @@ export function createExpressApp(): express.Application {
         "Model Context Protocol Server with OpenAI Vector Store integration",
       status: "running",
       timestamp: new Date().toISOString(),
+      environment: config.environment.nodeEnv,
+      deployment: process.env.VERCEL ? "vercel" : "local",
+      endpoints: {
+        health: "/health",
+        mcp: "/mcp (POST, GET, DELETE)",
+        webhook: "/webhook (POST)",
+        stats: "/stats (GET, requires auth)",
+      },
     });
   });
 
