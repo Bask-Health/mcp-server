@@ -46,15 +46,6 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 }
+const app = await main();
 
-// Start the application
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((error) => {
-    logger.error("Unhandled error in main", {
-      error: error instanceof Error ? error.message : "Unknown error",
-    });
-    process.exit(1);
-  });
-}
-
-export default createExpressApp;
+export default app;
