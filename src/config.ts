@@ -29,7 +29,7 @@ function validateEnvVar(name: string, value: string | undefined): string {
 export const config: Config = {
   api: {
     key: validateEnvVar("API_KEY", process.env.API_KEY),
-    port: parseInt(process.env.PORT || "3000", 10),
+    port: parseInt(process.env.PORT || "8000", 10),
     corsOrigin: process.env.CORS_ORIGIN || "*",
   },
   openai: {

@@ -42,16 +42,88 @@ export function createExpressApp(): express.Application {
 
   app.disable("x-powered-by");
 
+  // Request timeout middleware to prevent hanging requests
+  app.use((req, res, next) => {
+    // Set a 30-second timeout for all requests
+    req.setTimeout(30000, () => {
+      logger.warn("Request timeout", {
+        url: req.url,
+        method: req.method,
+        ip: req.ip,
+      });
+      if (!res.headersSent) {
+        res.status(408).json({
+          error: "Request timeout",
+          message: "The request took too long to process",
+        });
+      }
+    });
+
+    res.setTimeout(30000, () => {
+      logger.warn("Response timeout", {
+        url: req.url,
+        method: req.method,
+        ip: req.ip,
+      });
+    });
+
+    next();
+  });
+
+  // Request logging middleware
+  app.use((req, res, next) => {
+    const start = Date.now();
+
+    logger.info("Incoming request", {
+      method: req.method,
+      url: req.url,
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
+      contentType: req.headers["content-type"],
+    });
+
+    // Log response when finished
+    res.on("finish", () => {
+      const duration = Date.now() - start;
+      logger.info("Request completed", {
+        method: req.method,
+        url: req.url,
+        statusCode: res.statusCode,
+        duration: `${duration}ms`,
+        ip: req.ip,
+      });
+    });
+
+    next();
+  });
+
   // Body parsing middleware
   app.use(express.json({ limit: "10mb" }));
   app.use(express.raw({ type: "application/json", limit: "10mb" }));
 
+  // Root endpoint - basic API info
+  app.get("/", (req, res) => {
+    logger.info("Root endpoint accessed", { ip: req.ip });
+    res.json({
+      name: "MCP Server",
+      version: "1.0.0",
+      description:
+        "Model Context Protocol Server with OpenAI Vector Store integration",
+      status: "running",
+      timestamp: new Date().toISOString(),
+    });
+  });
+
   // Health check endpoint
   app.get("/health", (req, res) => {
+    logger.info("Health check accessed", { ip: req.ip });
     res.json({
       status: "healthy",
       timestamp: new Date().toISOString(),
       version: "1.0.0",
+      uptime: process.uptime(),
+      memory: process.memoryUsage(),
+      environment: config.environment.nodeEnv,
     });
   });
 
@@ -227,12 +299,24 @@ export function createExpressApp(): express.Application {
       url: req.originalUrl,
       method: req.method,
       ip: req.ip,
+      userAgent: req.headers["user-agent"],
     });
 
-    res.status(404).json({
-      error: "Endpoint not found",
-      availableEndpoints: ["/health", "/mcp", "/webhook", "/stats"],
-    });
+    // Ensure response is always sent
+    if (!res.headersSent) {
+      res.status(404).json({
+        error: "Endpoint not found",
+        message: `The endpoint '${req.method} ${req.originalUrl}' was not found on this server`,
+        availableEndpoints: {
+          root: "GET /",
+          health: "GET /health",
+          mcp: "POST|GET|DELETE /mcp",
+          webhook: "POST /webhook",
+          stats: "GET /stats (requires auth)",
+        },
+        timestamp: new Date().toISOString(),
+      });
+    }
   });
 
   // Global error handler (must be last)

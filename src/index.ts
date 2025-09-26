@@ -14,6 +14,7 @@ async function main(): Promise<void> {
     logger.info("Starting MCP server application", {
       nodeEnv: config.environment.nodeEnv,
       port: config.api.port,
+      corsOrigin: config.api.corsOrigin,
     });
 
     // Create and configure the Express application
@@ -23,7 +24,6 @@ async function main(): Promise<void> {
     const server = app.listen(config.api.port, () => {
       logger.info(`Server listening on port ${config.api.port}`, {
         environment: config.environment.nodeEnv,
-        vectorStoreId: config.openai.vectorStoreId || "Not configured",
       });
     });
 
