@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient } from "../generated/prisma_client/index.js";
 import { logger } from "./logger.js";
 import { config } from "./config.js";
 

@@ -31,5 +31,6 @@ openai.log
 vector_store/
 .env
 
-/src/generated/prisma
+/src/generated/
+/generated/
 /.sst/

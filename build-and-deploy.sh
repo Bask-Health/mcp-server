@@ -1,3 +1,4 @@
+
 #!/bin/bash
 
 # Build and Deploy Script for MCP Server (Bash version)
@@ -33,7 +34,7 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "🏗️  Building Docker image..."
-docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
+sudo docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
 
 if [ $? -ne 0 ]; then
     echo "❌ Docker build failed"
@@ -41,7 +42,7 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "📤 Pushing image to ECR..."
-docker push $ECR_REPOSITORY:$IMAGE_TAG
+sudo docker push $ECR_REPOSITORY:$IMAGE_TAG
 
 if [ $? -ne 0 ]; then
     echo "❌ Docker push failed"
