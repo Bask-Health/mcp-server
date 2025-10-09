@@ -4,11 +4,29 @@
     "moduleResolution": "node10",
     "target": "ES2022",
     "outDir": "dist",
-    "rootDir": "./src",
     "strict": true,
+    "declaration": false,
+    "sourceMap": false,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
-  "skipLibCheck": true
+    "skipLibCheck": true,
+    "rootDir": "src",
+  },
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    ".sst",
+    ".sst/**/*",
+    "**/.sst/**/*",
+    "sst.config.ts",
+    "**/*.test.ts",
+    "**/*.spec.ts"
+  ],
+  "ts-node": {
+    "esm": true
   }
-  ,
-  "include": ["src"]
 }

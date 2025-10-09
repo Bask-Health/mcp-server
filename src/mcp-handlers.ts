@@ -6,46 +6,56 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { validateOpenAIClient, VECTOR_STORE_ID } from "./openai-client.js";
 import { SearchResult, FetchResponse, SessionInfo } from "./types.js";
 import { logger } from "./logger.js";
+import { SessionService } from "./session-service.js";
 
-// Session management - simplified for serverless compatibility
+// In-memory transport cache for active connections (lightweight)
 const transports: Map<string, StreamableHTTPServerTransport> = new Map();
-const sessions: Map<string, SessionInfo> = new Map();
 
-// Only run cleanup in non-serverless environments
-if (process.env.NODE_ENV === 'development') {
-  // Clean up stale sessions every 5 minutes (only in long-running environments)
-  setInterval(() => {
-    const now = new Date();
-    const staleThreshold = 30 * 60 * 1000; // 30 minutes
+// Database-backed session cleanup with configurable intervals
+const SESSION_CLEANUP_INTERVAL = 5 * 60 * 1000; // 5 minutes
+const SESSION_EXPIRY_TIME = parseInt(
+  process.env.SESSION_EXPIRY_MINUTES || "120",
+  10
+); // Default 2 hours
 
-    sessions.forEach((session, sessionId) => {
-      if (now.getTime() - session.lastActivity.getTime() > staleThreshold) {
-        logger.info("Cleaning up stale session", { sessionId });
-        cleanupSession(sessionId);
-      }
-    });
-  }, 5 * 60 * 1000);
-}
-
-function cleanupSession(sessionId: string): void {
+setInterval(async () => {
   try {
+    const cleanedCount = await SessionService.cleanupExpiredSessions(
+      SESSION_EXPIRY_TIME
+    );
+    if (cleanedCount > 0) {
+      logger.info("Database session cleanup completed", {
+        cleanedCount,
+        expiryMinutes: SESSION_EXPIRY_TIME,
+      });
+    }
+  } catch (error) {
+    logger.error("Database session cleanup failed", { error });
+  }
+}, SESSION_CLEANUP_INTERVAL);
+
+logger.info("Database-backed session management enabled for EC2 environment");
+
+async function cleanupSession(sessionId: string): Promise<void> {
+  try {
+    // Close transport if exists
     const transport = transports.get(sessionId);
     if (transport) {
       transport.close?.();
       transports.delete(sessionId);
     }
-    sessions.delete(sessionId);
-    logger.debug("Session cleaned up", { sessionId });
+
+    // Deactivate session in database
+    await SessionService.deactivateSession(sessionId);
+
+    logger.info("Session cleaned up", { sessionId });
   } catch (error) {
-    logger.error("Error cleaning up session", {
-      sessionId,
-      error: error instanceof Error ? error.message : "Unknown error",
-    });
+    logger.error("Failed to cleanup session", { sessionId, error });
   }
 }
 
 /**
- * Handle search tool execution with improved error handling and timeout protection
+ * Handle search tool execution with improved error handling
  */
 async function handleSearch(args: {
   query: string;
@@ -77,27 +87,16 @@ async function handleSearch(args: {
       vectorStoreId: VECTOR_STORE_ID,
     });
 
-    // Add timeout protection for serverless environments
-    const searchPromise = openai.vectorStores.search(VECTOR_STORE_ID, {
+    // EC2 can handle longer operations
+    const response = await openai.vectorStores.search(VECTOR_STORE_ID, {
       query,
       rewrite_query: true,
     });
 
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(
-        () => reject(new Error("Search timeout after 25 seconds")),
-        25000
-      )
-    );
-
-    const response = (await Promise.race([
-      searchPromise,
-      timeoutPromise,
-    ])) as any;
     const results: SearchResult[] = [];
 
-    for (let i = 0; i < Math.min(response.data.length, 10); i++) {
-      // Limit to 10 results
+    // Return more results for EC2 (not limited like serverless)
+    for (let i = 0; i < Math.min(response.data.length, 20); i++) {
       const item = response.data[i];
 
       // Extract text content safely
@@ -119,10 +118,10 @@ async function handleSearch(args: {
         textContent = "No content available";
       }
 
-      // Create a snippet from content (shorter for serverless)
+      // Longer snippets for EC2 environment
       const textSnippet =
-        textContent.length > 150
-          ? textContent.slice(0, 150) + "..."
+        textContent.length > 300
+          ? textContent.slice(0, 300) + "..."
           : textContent;
 
       const result: SearchResult = {
@@ -336,31 +335,31 @@ export async function createMcpServer(): Promise<McpServer> {
   return server;
 }
 
-export function getOrCreateTransport(
+export async function getOrCreateTransport(
   sessionId?: string,
   requestBody?: any
-): StreamableHTTPServerTransport | null {
+): Promise<StreamableHTTPServerTransport | null> {
   try {
     logger.debug("Transport request", {
       sessionId,
       hasBody: !!requestBody,
-      isVercel: !!process.env.VERCEL,
+      method: requestBody?.method,
+      environment: "EC2",
     });
 
-    // Handle existing session
+    // Handle existing session (EC2 supports session reuse)
     if (sessionId && transports.has(sessionId)) {
       const transport = transports.get(sessionId);
-      const session = sessions.get(sessionId);
+      const session = await SessionService.getSession(sessionId);
 
-      if (transport && session) {
-        // Update activity timestamp
-        session.lastActivity = new Date();
+      if (transport && session && session.status === "active") {
+        // Session activity is automatically updated in getSession
         logger.debug("Reusing existing transport", { sessionId });
         return transport;
       } else {
         // Clean up invalid session
         logger.warn("Found invalid session, cleaning up", { sessionId });
-        cleanupSession(sessionId);
+        await cleanupSession(sessionId);
       }
     }
 
@@ -368,42 +367,43 @@ export function getOrCreateTransport(
     if (!sessionId && requestBody && isInitializeRequest(requestBody)) {
       logger.info("Creating new MCP transport for initialization", {
         method: requestBody.method,
-        isVercel: !!process.env.VERCEL,
+        environment: "EC2",
       });
 
       try {
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
-          onsessioninitialized: (newSessionId) => {
+          onsessioninitialized: async (newSessionId) => {
             logger.info("MCP session initialized", {
               sessionId: newSessionId,
               transport: "created",
             });
 
-            // Store the transport and session info
+            // Store the transport in memory for quick access
             transports.set(newSessionId, transport);
-            sessions.set(newSessionId, {
-              id: newSessionId,
-              createdAt: new Date(),
-              lastActivity: new Date(),
+
+            // Create session in database
+            await SessionService.createSession(newSessionId, {
+              transportType: "http",
+              userAgent: "mcp-client", // Default since headers not available in MCP request body
+            });
+
+            // Save transport state in database
+            await SessionService.saveTransportState(newSessionId, "http", {
+              created: new Date().toISOString(),
             });
           },
         });
 
-        // Set up cleanup handler (Not reliable in serverless)
-        transport.onclose = () => {
+        // Set up cleanup handler
+        transport.onclose = async () => {
           if (transport.sessionId) {
             logger.info("Transport closed, cleaning up session", {
               sessionId: transport.sessionId,
             });
-            cleanupSession(transport.sessionId);
+            await cleanupSession(transport.sessionId);
           }
         };
-
-        // In serverless environments, clean up old sessions immediately to free memory
-        if (process.env.VERCEL) {
-          cleanupOldSessions();
-        }
 
         logger.debug("Transport created successfully");
         return transport;
@@ -436,44 +436,27 @@ export function getOrCreateTransport(
   }
 }
 
-// Helper function to clean up old sessions in serverless environments
-function cleanupOldSessions(): void {
-  if (sessions.size > 10) {
-    // Keep max 10 sessions in serverless
-    const now = new Date();
-    const sessionsToCleanup: string[] = [];
-
-    sessions.forEach((session, sessionId) => {
-      const ageMinutes =
-        (now.getTime() - session.lastActivity.getTime()) / (1000 * 60);
-      if (ageMinutes > 10) {
-        // Cleanup sessions older than 10 minutes
-        sessionsToCleanup.push(sessionId);
-      }
-    });
-
-    sessionsToCleanup.forEach(cleanupSession);
-
-    if (sessionsToCleanup.length > 0) {
-      logger.info("Cleaned up old sessions", {
-        count: sessionsToCleanup.length,
-        remaining: sessions.size,
-      });
-    }
+export async function getSessionStats() {
+  try {
+    const dbStats = await SessionService.getSessionStats();
+    return {
+      activeSessions: dbStats.active,
+      totalSessions: dbStats.total,
+      inactiveSessions: dbStats.inactive,
+      expiredSessions: dbStats.expired,
+      activeTransports: transports.size,
+      database: dbStats,
+    };
+  } catch (error) {
+    logger.error("Failed to get session stats", { error });
+    return {
+      activeSessions: 0,
+      totalSessions: 0,
+      inactiveSessions: 0,
+      expiredSessions: 0,
+      activeTransports: transports.size,
+      database: { total: 0, active: 0, inactive: 0, expired: 0 },
+      error: "Database unavailable",
+    };
   }
-}
-
-export function getSessionStats() {
-  return {
-    activeSessions: sessions.size,
-    activeTransports: transports.size,
-    sessions: Array.from(sessions.values()).map((session) => ({
-      id: session.id,
-      createdAt: session.createdAt,
-      lastActivity: session.lastActivity,
-      ageMinutes: Math.round(
-        (new Date().getTime() - session.createdAt.getTime()) / (1000 * 60)
-      ),
-    })),
-  };
 }

@@ -102,6 +102,18 @@ export function createExpressApp(): express.Application {
   app.use(express.json({ limit: "10mb" }));
   app.use(express.raw({ type: "application/json", limit: "10mb" }));
 
+  // Health check endpoint for Docker and load balancer
+  app.get("/health", (req, res) => {
+    res.status(200).json({
+      status: "healthy",
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      version: process.env.npm_package_version || "1.0.0",
+      environment: config.environment.nodeEnv,
+      memory: process.memoryUsage(),
+    });
+  });
+
   // Root endpoint - basic API info
   app.get("/", (req, res) => {
     logger.info("Root endpoint accessed", { ip: req.ip });
@@ -123,20 +135,7 @@ export function createExpressApp(): express.Application {
     });
   });
 
-  // Health check endpoint
-  app.get("/health", (req, res) => {
-    logger.info("Health check accessed", { ip: req.ip });
-    res.json({
-      status: "healthy",
-      timestamp: new Date().toISOString(),
-      version: "1.0.0",
-      uptime: process.uptime(),
-      memory: process.memoryUsage(),
-      environment: config.environment.nodeEnv,
-    });
-  });
-
-  // Session stats endpoint (for debugging)
+  // Session stats endpoint
   app.get("/stats", mcpAuthMiddleware, (req, res) => {
     try {
       const stats = getSessionStats();
@@ -163,7 +162,7 @@ export function createExpressApp(): express.Application {
         userAgent: req.headers["user-agent"]?.substring(0, 100),
       });
 
-      // Set a response timeout for serverless environments
+      // Set a reasonable timeout for EC2 environment
       const requestTimeout = setTimeout(() => {
         if (!res.headersSent) {
           logger.error("MCP request timeout", {
@@ -180,12 +179,13 @@ export function createExpressApp(): express.Application {
             id: req.body?.id || null,
           });
         }
-      }, 300000); // 300 second timeout
+      }, 120000); // 2 minute timeout for EC2
 
-      const transport = getOrCreateTransport(sessionId, req.body);
+      const transport = await getOrCreateTransport(sessionId, req.body);
 
       if (!transport) {
         clearTimeout(requestTimeout);
+
         logger.warn("Failed to get or create transport", {
           sessionId,
           method: req.body?.method,
@@ -291,7 +291,7 @@ export function createExpressApp(): express.Application {
         });
       }
 
-      const transport = getOrCreateTransport(sessionId);
+      const transport = await getOrCreateTransport(sessionId);
       if (!transport) {
         logger.warn("GET /mcp request with invalid session ID", {
           sessionId,
@@ -328,7 +328,7 @@ export function createExpressApp(): express.Application {
         });
       }
 
-      const transport = getOrCreateTransport(sessionId);
+      const transport = await getOrCreateTransport(sessionId);
       if (!transport) {
         logger.warn("DELETE /mcp request with invalid session ID", {
           sessionId,

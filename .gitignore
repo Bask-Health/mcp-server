@@ -30,3 +30,6 @@ Thumbs.db
 openai.log
 vector_store/
 .env
+
+/src/generated/prisma
+/.sst/

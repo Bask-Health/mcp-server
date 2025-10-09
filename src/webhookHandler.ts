@@ -195,7 +195,7 @@ class JobQueue extends EventEmitter {
       this.queue.splice(insertIndex, 0, queueJob);
     }
 
-    console.log(
+    logger.info(
       `Job ${queueJob.id} added to queue (priority: ${job.priority})`
     );
     this.emit("jobAdded", queueJob);
@@ -223,7 +223,7 @@ class JobQueue extends EventEmitter {
     job.attempts++;
     this.processing.add(job.id);
 
-    console.log(`Processing job ${job.id} (attempt ${job.attempts})`);
+    logger.info(`Processing job ${job.id} (attempt ${job.attempts})`);
     this.emit("jobStarted", job);
 
     try {
@@ -236,10 +236,10 @@ class JobQueue extends EventEmitter {
       job.status = "completed";
       this.completed.set(job.id, { status: "completed", result });
 
-      console.log(`Job ${job.id} completed successfully`);
+      logger.info(`Job ${job.id} completed successfully`);
       this.emit("jobCompleted", job, result);
     } catch (error) {
-      console.error(`Job ${job.id} failed:`, error);
+      logger.error(`Job ${job.id} failed`, { error });
 
       if (job.attempts < 3) {
         // Retry with exponential backoff
@@ -319,7 +319,7 @@ export class BatchProcessor {
     const batchId = `batch_${Date.now()}_${Math.random()
       .toString(36)
       .substr(2, 9)}`;
-    console.log(
+    logger.info(
       `Starting batch processing for ${files.length} files in ${repository}`
     );
 
@@ -343,13 +343,13 @@ export class BatchProcessor {
       batch.status = "completed";
       batch.completedAt = new Date();
 
-      console.log(
+      logger.info(
         `Batch ${batchId} completed: ${
           results.filter((r) => r.status === "success").length
         }/${results.length} files processed successfully`
       );
     } catch (error) {
-      console.error(`Batch ${batchId} failed:`, error);
+      logger.error(`Batch ${batchId} failed`, { error });
       batch.status = "failed";
       batch.error = error instanceof Error ? error.message : "Unknown error";
       batch.completedAt = new Date();
@@ -370,7 +370,7 @@ export class BatchProcessor {
 
       if (VECTOR_STORE_ID) {
         vectorStoreId = VECTOR_STORE_ID;
-        console.log(`Using existing vector store: ${vectorStoreId}`);
+        logger.info(`Using existing vector store: ${vectorStoreId}`);
       } else {
         const vectorStore = await openai.vectorStores.create({
           name: `repo-${repoFullName.replace("/", "-")}`,
@@ -381,11 +381,11 @@ export class BatchProcessor {
         });
 
         vectorStoreId = vectorStore.id;
-        console.log(`Created new vector store: ${vectorStoreId}`);
+        logger.info(`Created new vector store: ${vectorStoreId}`);
       }
       return vectorStoreId;
     } catch (error) {
-      console.error("Error getting/creating vector store:", error);
+      logger.error("Error getting/creating vector store", { error });
       throw error;
     }
   }
@@ -429,7 +429,7 @@ export class BatchProcessor {
       error?: string;
     }>
   ) {
-    console.log(`Batch removing ${files.length} files`);
+    logger.info(`Batch removing ${files.length} files`);
 
     try {
       // Get all files in vector store
@@ -444,7 +444,7 @@ export class BatchProcessor {
           const fileDetails = await openai.files.retrieve(file.id);
           vectorStoreFileMap.set(fileDetails.filename, file.id);
         } catch (error) {
-          console.error(`Error retrieving file details for ${file.id}:`, error);
+          logger.error(`Error retrieving file details for ${file.id}`, { error });
         }
       }
 
@@ -461,12 +461,12 @@ export class BatchProcessor {
             await openai.vectorStores.files.del(vectorStoreId, fileId);
             await openai.files.del(fileId);
             results.push({ filename: file.filename, status: "success" });
-            console.log(`Removed: ${file.filename}`);
+            logger.info(`Removed: ${file.filename}`);
           } else {
             results.push({ filename: file.filename, status: "success" });
           }
         } catch (error) {
-          console.error(`Error removing ${file.filename}:`, error);
+          logger.error(`Error removing ${file.filename}`, { error });
           results.push({
             filename: file.filename,
             status: "failed",
@@ -487,7 +487,7 @@ export class BatchProcessor {
         }
       }
     } catch (error) {
-      console.error("Error in batch remove:", error);
+      logger.error("Error in batch remove", { error });
       // Mark all files as failed if batch operation fails
       files.forEach((file) => {
         if (!results.find((r) => r.filename === file.filename)) {
@@ -510,7 +510,7 @@ export class BatchProcessor {
       error?: string;
     }>
   ) {
-    console.log(`Batch adding/updating ${files.length} files`);
+    logger.info(`Batch adding/updating ${files.length} files`);
 
     // Create temporary files and upload in batches
     const tempFiles: Array<{
@@ -558,9 +558,9 @@ export class BatchProcessor {
             });
 
             results.push({ filename: encodedFilename, status: "success" });
-            console.log(`Processed: ${encodedFilename} (${file.status})`);
+            logger.info(`Processed: ${encodedFilename} (${file.status})`);
           } catch (error) {
-            console.error(`Error processing ${encodedFilename}:`, error);
+            logger.error(`Error processing ${encodedFilename}`, { error });
             results.push({
               filename: encodedFilename,
               status: "failed",
@@ -605,7 +605,7 @@ export class BatchProcessor {
         }
       }
     } catch (error) {
-      console.error(`Error removing existing file ${encodedFilename}:`, error);
+      logger.error(`Error removing existing file ${encodedFilename}`, { error });
     }
   }
 
@@ -625,7 +625,7 @@ export class BatchProcessor {
     try {
       await promisify(fs.unlink)(filePath);
     } catch (error) {
-      console.error("Error cleaning up temporary file:", error);
+      logger.error("Error cleaning up temporary file", { error });
     }
   }
 }
@@ -712,7 +712,7 @@ class OpenAIVectorStoreUpdater {
       }
       return null;
     } catch (error) {
-      console.error(`Error fetching file content for ${path}:`, error);
+      logger.error(`Error fetching file content for ${path}`, { error });
       return null;
     }
   }

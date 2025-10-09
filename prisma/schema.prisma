@@ -1,0 +1,92 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// Model for storing MCP session information
+model Session {
+  id           String   @id @default(cuid())
+  sessionId    String   @unique
+  createdAt    DateTime @default(now())
+  lastActivity DateTime @updatedAt
+  status       String   @default("active") // active, inactive, expired
+
+  // Session metadata
+  metadata Json? // Store additional session data
+
+  // Transport state
+  transport Transport?
+
+  @@index([sessionId])
+  @@index([lastActivity])
+  @@map("sessions")
+}
+
+// Model for storing transport state
+model Transport {
+  id        String  @id @default(cuid())
+  sessionId String  @unique
+  session   Session @relation(fields: [sessionId], references: [sessionId], onDelete: Cascade)
+
+  // Transport configuration
+  transportType String @default("http")
+  state         Json? // Serialized transport state
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("transports")
+}
+
+// Model for storing session logs/events
+model SessionLog {
+  id        String @id @default(cuid())
+  sessionId String
+
+  // Log details
+  level    String // info, warn, error, debug
+  message  String @db.Text
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([sessionId])
+  @@index([createdAt])
+  @@map("session_logs")
+}
+
+// Model for storing MCP tool usage statistics
+model ToolUsage {
+  id        String  @id @default(cuid())
+  sessionId String?
+
+  // Tool information
+  toolName  String
+  operation String // search, fetch, etc.
+
+  // Usage metrics
+  duration     Int? // Duration in milliseconds
+  success      Boolean @default(true)
+  errorMessage String? @db.Text
+
+  // Request/response metadata
+  requestSize  Int? // Size in bytes
+  responseSize Int? // Size in bytes
+
+  createdAt DateTime @default(now())
+
+  @@index([toolName])
+  @@index([createdAt])
+  @@index([sessionId])
+  @@map("tool_usage")
+}
