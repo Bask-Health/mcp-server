@@ -13,10 +13,6 @@ RUN npm ci
 
 # Copy source code
 COPY src/ ./src/
-COPY prisma/ ./prisma/
-
-# Generate Prisma client
-RUN npx prisma generate
 
 # Build the application
 RUN npm run build
@@ -41,9 +37,6 @@ RUN npm ci --only=production && npm cache clean --force
 # Copy built application from builder stage
 COPY --from=builder /app/dist ./dist
 
-# Copy Prisma files and generated client (custom output path)
-COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/generated ./generated
 
 # Change ownership to non-root user
 RUN chown -R expressjs:nodejs /app

@@ -5,16 +5,11 @@ import { config } from "./config.js";
 import { logger } from "./logger.js";
 import {
   mcpAuthMiddleware,
-  validateRequestBody,
   errorHandler,
 } from "./middleware.js";
-import {
-  createMcpServer,
-  getOrCreateTransport,
-  getSessionStats,
-} from "./mcp-handlers.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { vectorStoreUpdater } from "./webhookHandler.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { mcpServer, transports } from "./mcp-server.js";
 
 export function createExpressApp(): express.Application {
   const app = express();
@@ -135,221 +130,50 @@ export function createExpressApp(): express.Application {
     });
   });
 
-  // Session stats endpoint
-  app.get("/stats", mcpAuthMiddleware, (req, res) => {
-    try {
-      const stats = getSessionStats();
-      res.json(stats);
-    } catch (error) {
-      logger.error("Error getting session stats", {
-        error: error instanceof Error ? error.message : "Unknown error",
-      });
-      res.status(500).json({ error: "Failed to get session stats" });
-    }
-  });
-
   // Main MCP endpoint
-  app.post("/mcp", mcpAuthMiddleware, validateRequestBody, async (req, res) => {
-    const startTime = Date.now();
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-
-    try {
-      logger.info("MCP request received", {
-        method: req.body?.method,
-        sessionId,
-        hasSessionId: !!sessionId,
-        ip: req.ip,
-        userAgent: req.headers["user-agent"]?.substring(0, 100),
-      });
-
-      // Set a reasonable timeout for EC2 environment
-      const requestTimeout = setTimeout(() => {
-        if (!res.headersSent) {
-          logger.error("MCP request timeout", {
-            method: req.body?.method,
-            sessionId,
-            duration: Date.now() - startTime,
-          });
-          res.status(504).json({
-            jsonrpc: "2.0",
-            error: {
-              code: -32603,
-              message: "Request timeout - operation took too long",
-            },
-            id: req.body?.id || null,
-          });
-        }
-      }, 120000); // 2 minute timeout for EC2
-
-      const transport = await getOrCreateTransport(sessionId, req.body);
-
-      if (!transport) {
-        clearTimeout(requestTimeout);
-
-        logger.warn("Failed to get or create transport", {
-          sessionId,
-          method: req.body?.method,
-          ip: req.ip,
-          isInitRequest: req.body ? isInitializeRequest(req.body) : false,
-        });
-
-        return res.status(400).json({
-          jsonrpc: "2.0",
-          error: {
-            code: -32000,
-            message: sessionId
-              ? "Session not found. Please initialize a new session."
-              : "Unable to establish MCP session. Ensure this is a valid initialize request.",
-            details: {
-              sessionId,
-              method: req.body?.method,
-              expectedFlow:
-                "Send an initialize request without session ID to create a new session",
-            },
-          },
-          id: req.body?.id || null,
-        });
-      }
-
-      // Connect server to transport if needed (only for initialize requests)
-      if (!transport.sessionId && req.body?.method === "initialize") {
-        try {
-          logger.info("Creating and connecting MCP server to transport");
-          const server = await createMcpServer();
-          await server.connect(transport);
-          logger.info("MCP server connected to new transport successfully");
-        } catch (connectError) {
-          clearTimeout(requestTimeout);
-          logger.error("Failed to connect MCP server to transport", {
-            error:
-              connectError instanceof Error
-                ? connectError.message
-                : "Unknown error",
-            stack:
-              connectError instanceof Error ? connectError.stack : undefined,
-          });
-
-          return res.status(500).json({
-            jsonrpc: "2.0",
-            error: {
-              code: -32603,
-              message: "Failed to initialize MCP server connection",
-            },
-            id: req.body?.id || null,
-          });
-        }
-      }
-
-      // Handle the request with timeout protection
-      try {
-        await transport.handleRequest(req, res, req.body);
-        clearTimeout(requestTimeout);
-
-        const duration = Date.now() - startTime;
-        logger.info("MCP request completed", {
-          method: req.body?.method,
-          sessionId: transport.sessionId,
-          duration: `${duration}ms`,
-        });
-      } catch (handleError) {
-        clearTimeout(requestTimeout);
-        throw handleError;
-      }
-    } catch (error) {
-      const duration = Date.now() - startTime;
-      logger.error("MCP request handling error", {
-        error: error instanceof Error ? error.message : "Unknown error",
-        stack: error instanceof Error ? error.stack : undefined,
-        sessionId,
-        method: req.body?.method,
-        ip: req.ip,
-        duration: `${duration}ms`,
-      });
-
-      if (!res.headersSent) {
-        res.status(500).json({
-          jsonrpc: "2.0",
-          error: {
-            code: -32603,
-            message: "Internal server error during MCP request processing",
-          },
-          id: req.body?.id || null,
-        });
-      }
-    }
-  });
-
-  // Handle GET requests for server-to-client notifications via SSE
   app.get("/mcp", mcpAuthMiddleware, async (req, res) => {
+    const transport = new SSEServerTransport("/messages", res);
+    transports[transport.sessionId] = transport;
+
+    console.log(
+      `SSE connection established. Session ID: ${transport.sessionId}`
+    );
+
+    res.on("close", () => {
+      console.log(`SSE connection closed. Session ID: ${transport.sessionId}`);
+      delete transports[transport.sessionId];
+    });
     try {
-      const sessionId = req.headers["mcp-session-id"] as string | undefined;
-
-      if (!sessionId) {
-        logger.warn("GET /mcp request missing session ID", { ip: req.ip });
-        return res.status(400).json({
-          error: "Session ID required for SSE connection",
-        });
-      }
-
-      const transport = await getOrCreateTransport(sessionId);
-      if (!transport) {
-        logger.warn("GET /mcp request with invalid session ID", {
-          sessionId,
-          ip: req.ip,
-        });
-        return res.status(404).json({
-          error: "Session not found",
-        });
-      }
-
-      await transport.handleRequest(req, res);
+      await mcpServer.connect(transport);
+      console.log(
+        `Transport connected to MCP server. Session ID: ${transport.sessionId}`
+      );
     } catch (error) {
-      logger.error("MCP GET request error", {
-        error: error instanceof Error ? error.message : "Unknown error",
-        sessionId: req.headers["mcp-session-id"],
-        ip: req.ip,
-      });
-
-      if (!res.headersSent) {
-        res.status(500).json({ error: "Internal server error" });
-      }
+      console.error(
+        `Error connecting transport to MCP server. Session ID: ${transport.sessionId}`,
+        error
+      );
     }
   });
 
-  // Handle DELETE requests for session termination
-  app.delete("/mcp", mcpAuthMiddleware, async (req, res) => {
-    try {
-      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  app.post("/messages", mcpAuthMiddleware, async (req, res) => {
+    const sessionId = req.query.sessionId as string;
+    const transport = transports[sessionId] ?? Object.values(transports)[0];
 
-      if (!sessionId) {
-        logger.warn("DELETE /mcp request missing session ID", { ip: req.ip });
-        return res.status(400).json({
-          error: "Session ID required for session termination",
-        });
+    if (transport) {
+      console.log(`Handling message for Session ID: ${sessionId}`);
+      try {
+        await transport.handlePostMessage(req, res);
+      } catch (error) {
+        console.error(
+          `Error handling message for Session ID: ${sessionId}`,
+          error
+        );
+        res.status(500).send("Internal Server Error");
       }
-
-      const transport = await getOrCreateTransport(sessionId);
-      if (!transport) {
-        logger.warn("DELETE /mcp request with invalid session ID", {
-          sessionId,
-          ip: req.ip,
-        });
-        // Return success even if session doesn't exist (idempotent)
-        return res.status(200).json({ message: "Session terminated" });
-      }
-
-      await transport.handleRequest(req, res);
-      logger.info("MCP session terminated via DELETE", { sessionId });
-    } catch (error) {
-      logger.error("MCP DELETE request error", {
-        error: error instanceof Error ? error.message : "Unknown error",
-        sessionId: req.headers["mcp-session-id"],
-        ip: req.ip,
-      });
-
-      if (!res.headersSent) {
-        res.status(500).json({ error: "Internal server error" });
-      }
+    } else {
+      console.error(`No transport found for Session ID: ${sessionId}`);
+      res.status(400).send("No transport found for sessionId");
     }
   });
 

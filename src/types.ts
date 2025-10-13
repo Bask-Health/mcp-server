@@ -1,15 +1,15 @@
 export interface SearchResult {
   id: string;
   title: string;
-  text: string;
-  url?: string;
+  url: string;
+  text?: string;
 }
 
 export interface FetchResponse {
   id: string;
   title: string;
   text: string;
-  url?: string;
+  url: string;
   metadata?: any;
 }
 

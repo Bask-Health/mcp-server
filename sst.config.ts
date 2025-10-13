@@ -4,7 +4,8 @@ export default $config({
   app(input) {
     return {
       name: "mcp-server",
-      removal: input?.stage === "production" ? "retain" : "remove",
+      removal: input?.stage === "production" ? "retain-all" : "remove",
+      protect: ["production", "prod"].includes(input?.stage),
       home: "aws",
       providers: {
         aws: {
@@ -15,7 +16,8 @@ export default $config({
     };
   },
   async run() {
-    // Create VPC with protection (will use existing if already deployed)
+    const { SHARED_VPC_ID } = await import("./src/stage.js");
+    // Create VPC with protection
     const vpc = new aws.ec2.Vpc(
       "McpVpc",
       {
@@ -24,10 +26,9 @@ export default $config({
         enableDnsSupport: true,
         tags: { Name: "mcp-vpc" },
       },
-      { protect: $app.stage === "production" }
+      { id: SHARED_VPC_ID, protect: $app.stage === "production" }
     );
 
-    // Create Internet Gateway
     const igw = new aws.ec2.InternetGateway(
       "McpIgw",
       {
@@ -38,51 +39,29 @@ export default $config({
     );
 
     // Create public subnets for load balancer
-    const publicSubnet1 = new aws.ec2.Subnet("PublicSubnet1", {
-      vpcId: vpc.id,
-      cidrBlock: "10.0.1.0/24",
-      availabilityZone: "us-east-1a",
-      mapPublicIpOnLaunch: true,
-      tags: { Name: "mcp-public-1" },
-    });
+    const publicSubnet1 = new aws.ec2.Subnet(
+      "PublicSubnet1",
+      {
+        vpcId: vpc.id,
+        cidrBlock: "10.0.1.0/24",
+        availabilityZone: "us-east-1a",
+        mapPublicIpOnLaunch: true,
+        tags: { Name: "mcp-public-1" },
+      },
+      { protect: $app.stage === "production" }
+    );
 
-    const publicSubnet2 = new aws.ec2.Subnet("PublicSubnet2", {
-      vpcId: vpc.id,
-      cidrBlock: "10.0.2.0/24",
-      availabilityZone: "us-east-1b",
-      mapPublicIpOnLaunch: true,
-      tags: { Name: "mcp-public-2" },
-    });
-
-    // Create private subnets for containers
-    // const privateSubnet1 = new aws.ec2.Subnet("PrivateSubnet1", {
-    //   vpcId: vpc.id,
-    //   cidrBlock: "10.0.10.0/24",
-    //   availabilityZone: "us-east-1a",
-    //   tags: { Name: "mcp-private-1" },
-    // });
-
-    // const privateSubnet2 = new aws.ec2.Subnet("PrivateSubnet2", {
-    //   vpcId: vpc.id,
-    //   cidrBlock: "10.0.11.0/24",
-    //   availabilityZone: "us-east-1b",
-    //   tags: { Name: "mcp-private-2" },
-    // });
-
-    // Create database subnets
-    const dbSubnet1 = new aws.ec2.Subnet("DbSubnet1", {
-      vpcId: vpc.id,
-      cidrBlock: "10.0.20.0/24",
-      availabilityZone: "us-east-1a",
-      tags: { Name: "mcp-db-1" },
-    });
-
-    const dbSubnet2 = new aws.ec2.Subnet("DbSubnet2", {
-      vpcId: vpc.id,
-      cidrBlock: "10.0.21.0/24",
-      availabilityZone: "us-east-1b",
-      tags: { Name: "mcp-db-2" },
-    });
+    const publicSubnet2 = new aws.ec2.Subnet(
+      "PublicSubnet2",
+      {
+        vpcId: vpc.id,
+        cidrBlock: "10.0.2.0/24",
+        availabilityZone: "us-east-1b",
+        mapPublicIpOnLaunch: true,
+        tags: { Name: "mcp-public-2" },
+      },
+      { protect: $app.stage === "production" }
+    );
 
     // Create route tables
     const publicRouteTable = new aws.ec2.RouteTable("PublicRouteTable", {
@@ -91,85 +70,34 @@ export default $config({
     });
 
     // Route for public subnets to internet gateway
-    new aws.ec2.Route("PublicRoute", {
-      routeTableId: publicRouteTable.id,
-      destinationCidrBlock: "0.0.0.0/0",
-      gatewayId: igw.id,
-    });
-
-    // Associate public subnets with public route table
-    new aws.ec2.RouteTableAssociation("PublicSubnet1Association", {
-      subnetId: publicSubnet1.id,
-      routeTableId: publicRouteTable.id,
-    });
-
-    new aws.ec2.RouteTableAssociation("PublicSubnet2Association", {
-      subnetId: publicSubnet2.id,
-      routeTableId: publicRouteTable.id,
-    });
-
-    // Create DB subnet group (using public subnets for initial setup and testing)
-    const dbSubnetGroup = new aws.rds.SubnetGroup("DbSubnetGroup", {
-      name: "mcp-db-subnet-group",
-      subnetIds: [publicSubnet1.id, publicSubnet2.id], // Using public subnets for setup
-      tags: { Name: "mcp-db-subnet-group" },
-    });
-
-    // Create security group for database
-    const dbSecurityGroup = new aws.ec2.SecurityGroup("DbSecurityGroup", {
-      vpcId: vpc.id,
-      description: "Security group for MCP database",
-      ingress: [
-        {
-          fromPort: 3306,
-          toPort: 3306,
-          protocol: "tcp",
-          cidrBlocks: ["10.0.0.0/16"], // VPC access
-        },
-      ],
-      egress: [
-        {
-          fromPort: 0,
-          toPort: 0,
-          protocol: "-1",
-          cidrBlocks: ["0.0.0.0/0"],
-        },
-      ],
-      tags: { Name: "mcp-db-sg" },
-    });
-
-    // Generate a secure random password for the database
-    const dbPassword = new aws.secretsmanager.Secret("DbPasswordSecret", {
-      name: `mcp-db-password-${$app.stage}`,
-      description: "MCP Database password",
-    });
-
-    const dbPasswordVersion = new aws.secretsmanager.SecretVersion(
-      "DbPasswordVersion",
+    new aws.ec2.Route(
+      "PublicRoute",
       {
-        secretId: dbPassword.id,
-        secretString: process.env.DB_PASSWORD || "tempPassword123!ChangeMe",
-      }
+        routeTableId: publicRouteTable.id,
+        destinationCidrBlock: "0.0.0.0/0",
+        gatewayId: igw.id,
+      },
+      { protect: $app.stage === "production" }
     );
 
-    // Create RDS database instance
-    const database = new aws.rds.Instance("McpDatabase", {
-      identifier: "mcp-database", 
-      engine: "mysql",
-      engineVersion: "8.0",
-      instanceClass: "db.t3.micro", // Free tier eligible
-      allocatedStorage: 20,
-      storageType: "gp2",
-      dbName: "mcp_sessions",
-      username: "mcpuser",
-      password: process.env.DB_PASSWORD,
-      vpcSecurityGroupIds: [dbSecurityGroup.id],
-      dbSubnetGroupName: dbSubnetGroup.name,
-      backupRetentionPeriod: $app.stage === "production" ? 7 : 1,
-      skipFinalSnapshot: $app.stage !== "production",
-      publiclyAccessible: true,
-      tags: { Name: "mcp-database" },
-    });
+    // Associate public subnets with public route table
+    new aws.ec2.RouteTableAssociation(
+      "PublicSubnet1Association",
+      {
+        subnetId: publicSubnet1.id,
+        routeTableId: publicRouteTable.id,
+      },
+      { protect: $app.stage === "production" }
+    );
+
+    new aws.ec2.RouteTableAssociation(
+      "PublicSubnet2Association",
+      {
+        subnetId: publicSubnet2.id,
+        routeTableId: publicRouteTable.id,
+      },
+      { protect: $app.stage === "production" }
+    );
 
     // Create ECS cluster with protection
     const cluster = new aws.ecs.Cluster(
@@ -199,6 +127,12 @@ export default $config({
             protocol: "tcp",
             cidrBlocks: ["0.0.0.0/0"], // HTTP access
           },
+          {
+            fromPort: 443,
+            toPort: 443,
+            protocol: "tcp",
+            cidrBlocks: ["0.0.0.0/0"], // HTTPS access
+          },
         ],
         egress: [
           {
@@ -209,7 +143,8 @@ export default $config({
           },
         ],
         tags: { Name: "mcp-service-sg" },
-      }
+      },
+      { protect: $app.stage === "production" }
     );
 
     // Create Application Load Balancer with protection
@@ -252,18 +187,59 @@ export default $config({
       }
     );
 
-    // Create ALB listener
-    const listener = new aws.lb.Listener("McpListener", {
+    // Get domain name from environment or use default
+    const domainName = process.env.DOMAIN_NAME || undefined;
+
+    // Create ACM certificate if domain is provided
+    let certificate: aws.acm.Certificate | undefined;
+    if (domainName) {
+      certificate = new aws.acm.Certificate("McpCertificate", {
+        domainName: domainName,
+        validationMethod: "DNS",
+        tags: { Name: "mcp-cert" },
+      });
+    }
+
+    // Create HTTP listener (redirect to HTTPS if cert exists)
+    const httpListener = new aws.lb.Listener("McpHttpListener", {
       loadBalancerArn: alb.arn,
-      port: 8080,
+      port: 80,
       protocol: "HTTP",
-      defaultActions: [
-        {
-          type: "forward",
-          targetGroupArn: targetGroup.arn,
-        },
-      ],
+      defaultActions: certificate
+        ? [
+            {
+              type: "redirect",
+              redirect: {
+                port: "443",
+                protocol: "HTTPS",
+                statusCode: "HTTP_301",
+              },
+            },
+          ]
+        : [
+            {
+              type: "forward",
+              targetGroupArn: targetGroup.arn,
+            },
+          ],
     });
+
+    // Create HTTPS listener if certificate exists
+    const httpsListener = certificate
+      ? new aws.lb.Listener("McpHttpsListener", {
+          loadBalancerArn: alb.arn,
+          port: 443,
+          protocol: "HTTPS",
+          certificateArn: certificate.arn,
+          sslPolicy: "ELBSecurityPolicy-TLS13-1-2-2021-06",
+          defaultActions: [
+            {
+              type: "forward",
+              targetGroupArn: targetGroup.arn,
+            },
+          ],
+        })
+      : undefined;
 
     // Create ECS task definition
     const taskRole = new aws.iam.Role("McpTaskRole", {
@@ -305,7 +281,7 @@ export default $config({
 
     // Create AWS Secrets Manager secret for sensitive data
     const mcpSecret = new aws.secretsmanager.Secret("McpSecret", {
-      name: `mcp-secrets-${$app.stage}`,
+      name: `mcp-secrets-${$app.stage}2`,
       description: "MCP Server secrets",
     });
 
@@ -331,17 +307,13 @@ export default $config({
         "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy",
     });
 
-    const DATABASE_URL = $interpolate`mysql://${database.username}:${
-      process.env.DB_PASSWORD
-    }@${database.endpoint}/${database.dbName}`;
-
-    // Create ECS task definition with cost optimizations
+    // ECS task definition
     const taskDefinition = new aws.ecs.TaskDefinition("McpTaskDefinition", {
       family: "mcp-task",
       networkMode: "awsvpc",
       requiresCompatibilities: ["FARGATE"],
-      cpu: "256", // Minimum CPU for cost optimization
-      memory: "512", // Minimum memory for cost optimization
+      cpu: "256",
+      memory: "512",
       executionRoleArn: executionRole.arn,
       taskRoleArn: taskRole.arn,
       containerDefinitions: JSON.stringify([
@@ -394,10 +366,6 @@ export default $config({
               value: $app.stage,
             },
             {
-              name: "DATABASE_URL",
-              value: DATABASE_URL,
-            },
-            {
               name: "API_KEY",
               value: process.env.API_KEY || "",
             },
@@ -416,22 +384,6 @@ export default $config({
             {
               name: "GITHUB_TOKEN",
               value: process.env.GITHUB_TOKEN || "",
-            },
-            {
-              name: "DB_HOST",
-              value: database.endpoint,
-            },
-            {
-              name: "DB_PORT",
-              value: "3306",
-            },
-            {
-              name: "DB_USER",
-              value: database.username,
-            },
-            {
-              name: "DB_NAME",
-              value: database.dbName,
             },
           ],
           logConfiguration: {
@@ -456,13 +408,13 @@ export default $config({
       ]),
     });
 
-    // Create CloudWatch log group with cost optimization
+    // CloudWatch log group
     const logGroup = new aws.cloudwatch.LogGroup("McpLogGroup", {
       name: "/ecs/mcp-task",
       retentionInDays: $app.stage === "production" ? 7 : 3, // Shorter retention for dev to save cost
     });
 
-    // Create ECS service with cost optimization
+    // ECS service
     const service = new aws.ecs.Service(
       "McpService",
       {
@@ -484,21 +436,17 @@ export default $config({
           },
         ],
       },
-      { dependsOn: [listener] }
+      {
+        dependsOn: httpsListener
+          ? [httpListener, httpsListener]
+          : [httpListener],
+      }
     );
 
-    // Return outputs
     return {
       vpc: {
         id: vpc.id,
         cidrBlock: vpc.cidrBlock,
-      },
-      database: {
-        endpoint: database.endpoint,
-        port: database.port,
-        dbName: database.dbName,
-        username: database.username,
-        publiclyAccessible: database.publiclyAccessible,
       },
       service: {
         loadBalancerUrl: $interpolate`http://${alb.dnsName}`,
@@ -507,12 +455,20 @@ export default $config({
       },
       subnets: {
         public: [publicSubnet1.id, publicSubnet2.id],
-        // private: [privateSubnet1.id, privateSubnet2.id],
-        database: [dbSubnet1.id, dbSubnet2.id],
       },
       urls: {
-        DATABASE_URL: DATABASE_URL,
-        EXPRESS_SERVER_URL: $interpolate`http://${alb.dnsName}`,
+        EXPRESS_SERVER_URL: certificate
+          ? $interpolate`https://${domainName}`
+          : $interpolate`http://${alb.dnsName}`,
+        HTTP_URL: $interpolate`http://${alb.dnsName}`,
+        HTTPS_URL: certificate
+          ? $interpolate`https://${domainName}`
+          : undefined,
+      },
+      ssl: {
+        enabled: !!certificate,
+        certificateArn: certificate?.arn,
+        domainName: domainName,
       },
     };
   },

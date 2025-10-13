@@ -21,7 +21,7 @@ export function mcpAuthMiddleware(
       return;
     }
 
-    if (protocolVersion !== "2025-06-18") {
+    if (protocolVersion !== "2024-11-05") {
       logger.warn("Invalid mcp-protocol-version", {
         version: protocolVersion,
         ip: req.ip,
@@ -31,7 +31,7 @@ export function mcpAuthMiddleware(
         res,
         400,
         -32600,
-        `Invalid mcp-protocol-version: ${protocolVersion}. Expected: 2025-06-18`
+        `Invalid mcp-protocol-version: ${protocolVersion}. Expected: 2024-11-05`
       );
       return;
     }
@@ -95,75 +95,6 @@ export function mcpAuthMiddleware(
       url: req.url,
     });
     respondWithError(res, 500, -32603, "Internal authentication error");
-  }
-}
-
-export function validateRequestBody(
-  req: express.Request,
-  res: express.Response,
-  next: express.NextFunction
-): void {
-  try {
-    if (!req.body) {
-      logger.warn("Missing request body", { ip: req.ip, url: req.url });
-      respondWithError(res, 400, -32600, "Missing request body");
-      return;
-    }
-
-    // Basic JSON-RPC validation
-    if (typeof req.body !== "object") {
-      logger.warn("Invalid request body format", {
-        ip: req.ip,
-        bodyType: typeof req.body,
-      });
-      respondWithError(
-        res,
-        400,
-        -32700,
-        "Request body must be a valid JSON object"
-      );
-      return;
-    }
-
-    const { jsonrpc, method, id } = req.body;
-
-    if (jsonrpc !== "2.0") {
-      logger.warn("Invalid JSON-RPC version", {
-        version: jsonrpc,
-        ip: req.ip,
-      });
-      respondWithError(
-        res,
-        400,
-        -32600,
-        "Invalid JSON-RPC version. Expected: 2.0"
-      );
-      return;
-    }
-
-    if (typeof method !== "string" || !method.trim()) {
-      logger.warn("Invalid or missing method", {
-        method,
-        ip: req.ip,
-      });
-      respondWithError(res, 400, -32600, "Method must be a non-empty string");
-      return;
-    }
-
-    logger.debug("Request validation successful", {
-      method,
-      id,
-      ip: req.ip,
-    });
-
-    next();
-  } catch (error) {
-    logger.error("Request validation error", {
-      error: error instanceof Error ? error.message : "Unknown error",
-      ip: req.ip,
-      url: req.url,
-    });
-    respondWithError(res, 500, -32603, "Internal validation error");
   }
 }
 

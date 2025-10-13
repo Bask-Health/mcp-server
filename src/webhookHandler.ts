@@ -7,7 +7,9 @@ import fs from "fs";
 import { promisify } from "util";
 import { EventEmitter } from "events";
 import { config as baseConfig } from "./config.js";
-import { VECTOR_STORE_ID, logger, openaiClient } from "./index.js";
+import { VECTOR_STORE_ID } from "./openai-client.js";
+import { logger } from "./logger.js";
+import { validateOpenAIClient } from "./openai-client.js";
 import { convertMdxToMd } from "./convertMdxContentToMd.js";
 
 let encoder = new TextEncoder();
@@ -77,7 +79,7 @@ logger.info("Webhook configuration loaded", {
 });
 
 const octokit = new Octokit({ auth: config.webhook.github.token });
-const openai = openaiClient!;
+const openai = validateOpenAIClient();
 
 if (!fs.existsSync(config.webhook.processing.tempDir)) {
   fs.mkdirSync(config.webhook.processing.tempDir, { recursive: true });
@@ -244,9 +246,12 @@ class JobQueue extends EventEmitter {
       if (job.attempts < 3) {
         // Retry with exponential backoff
         job.status = "retrying";
-        setTimeout(() => {
-          job.status = "pending";
-        }, Math.pow(2, job.attempts) * 1000);
+        setTimeout(
+          () => {
+            job.status = "pending";
+          },
+          Math.pow(2, job.attempts) * 1000
+        );
 
         this.emit("jobRetrying", job, error);
       } else {
@@ -263,15 +268,18 @@ class JobQueue extends EventEmitter {
       this.processing.delete(job.id);
 
       // Remove completed/failed jobs from queue after some time
-      setTimeout(() => {
-        const index = this.queue.findIndex((j) => j.id === job.id);
-        if (
-          index !== -1 &&
-          (job.status === "completed" || job.status === "failed")
-        ) {
-          this.queue.splice(index, 1);
-        }
-      }, 5 * 60 * 1000); // 5 minutes
+      setTimeout(
+        () => {
+          const index = this.queue.findIndex((j) => j.id === job.id);
+          if (
+            index !== -1 &&
+            (job.status === "completed" || job.status === "failed")
+          ) {
+            this.queue.splice(index, 1);
+          }
+        },
+        5 * 60 * 1000
+      ); // 5 minutes
     }
   }
 
@@ -363,7 +371,7 @@ export class BatchProcessor {
       // Try to find existing vector store
       const vectorStores = await openai.vectorStores.list();
       const existingStore = vectorStores.data.find(
-        (store) => store.name === `repo-${repoFullName.replace("/", "-")}`
+        (store: any) => store.name === `repo-${repoFullName.replace("/", "-")}`
       );
 
       let vectorStoreId: string;
@@ -433,9 +441,8 @@ export class BatchProcessor {
 
     try {
       // Get all files in vector store
-      const vectorStoreFiles = await openai.vectorStores.files.list(
-        vectorStoreId
-      );
+      const vectorStoreFiles =
+        await openai.vectorStores.files.list(vectorStoreId);
       const vectorStoreFileMap = new Map<string, string>();
 
       // Build filename to file ID mapping
@@ -444,7 +451,9 @@ export class BatchProcessor {
           const fileDetails = await openai.files.retrieve(file.id);
           vectorStoreFileMap.set(fileDetails.filename, file.id);
         } catch (error) {
-          logger.error(`Error retrieving file details for ${file.id}`, { error });
+          logger.error(`Error retrieving file details for ${file.id}`, {
+            error,
+          });
         }
       }
 
@@ -605,7 +614,9 @@ export class BatchProcessor {
         }
       }
     } catch (error) {
-      logger.error(`Error removing existing file ${encodedFilename}`, { error });
+      logger.error(`Error removing existing file ${encodedFilename}`, {
+        error,
+      });
     }
   }
 

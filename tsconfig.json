@@ -23,6 +23,7 @@
     ".sst/**/*",
     "**/.sst/**/*",
     "sst.config.ts",
+    "src/stage.ts",
     "**/*.test.ts",
     "**/*.spec.ts"
   ],

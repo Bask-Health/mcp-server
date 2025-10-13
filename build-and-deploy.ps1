@@ -38,6 +38,7 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "❌ ECR login failed" -ForegroundColor Red
     exit 1
 }
+Write-Host "✅ Successfully logged into ECR" -ForegroundColor Green
 
 Write-Host "🏗️  Building Docker image..." -ForegroundColor Yellow
 docker build -t $ECR_REPOSITORY`:$IMAGE_TAG .
