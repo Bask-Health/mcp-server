@@ -1,7 +1,4 @@
 import z from "zod";
-import { randomUUID } from "node:crypto";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { validateOpenAIClient, VECTOR_STORE_ID } from "./openai-client.js";
 import { SearchResult, FetchResponse } from "./types.js";
