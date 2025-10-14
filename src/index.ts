@@ -9,6 +9,8 @@ export { openaiClient, VECTOR_STORE_ID } from "./openai-client.js";
 
 const app = createExpressApp();
 
+export default app;
+
 /**
  * Main application entry point
  */

@@ -285,21 +285,6 @@ export default $config({
       description: "MCP Server secrets",
     });
 
-    // Store the secret values (in production, these should be set separately)
-    const secretVersion = new aws.secretsmanager.SecretVersion(
-      "McpSecretVersion",
-      {
-        secretId: mcpSecret.id,
-        secretString: JSON.stringify({
-          API_KEY: process.env.API_KEY || "",
-          OPENAI_API_KEY: process.env.OPENAI_API_KEY || "",
-          VECTOR_STORE_ID: process.env.VECTOR_STORE_ID || "",
-          GITHUB_WEBHOOK_SECRET: process.env.GITHUB_WEBHOOK_SECRET || "",
-          GITHUB_TOKEN: process.env.GITHUB_TOKEN || "",
-        }),
-      }
-    );
-
     // Add policy to task role for basic access
     new aws.iam.RolePolicyAttachment("McpTaskBasicPolicy", {
       role: taskRole.name,
