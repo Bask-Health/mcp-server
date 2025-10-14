@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
-    "start": "tsx src/index.ts",
+    "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "build": "rimraf dist && tsc",
     "serve": "node dist/index.js",

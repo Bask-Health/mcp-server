@@ -187,59 +187,26 @@ export default $config({
       }
     );
 
-    // Get domain name from environment or use default
-    const domainName = process.env.DOMAIN_NAME || undefined;
-
     // Create ACM certificate if domain is provided
-    let certificate: aws.acm.Certificate | undefined;
-    if (domainName) {
-      certificate = new aws.acm.Certificate("McpCertificate", {
-        domainName: domainName,
-        validationMethod: "DNS",
-        tags: { Name: "mcp-cert" },
-      });
-    }
+    const certificate = aws.acm.Certificate.get(
+      "arn:aws:acm:us-east-1:877508449792:certificate/7726189f-4e75-4105-b09d-ddf675cc39e5",
+      "arn:aws:acm:us-east-1:877508449792:certificate/7726189f-4e75-4105-b09d-ddf675cc39e5"
+    );
 
-    // Create HTTP listener (redirect to HTTPS if cert exists)
-    const httpListener = new aws.lb.Listener("McpHttpListener", {
+    // HTTPS listener
+    const httpsListener = new aws.lb.Listener("McpHttpsListener", {
       loadBalancerArn: alb.arn,
-      port: 80,
-      protocol: "HTTP",
-      defaultActions: certificate
-        ? [
-            {
-              type: "redirect",
-              redirect: {
-                port: "443",
-                protocol: "HTTPS",
-                statusCode: "HTTP_301",
-              },
-            },
-          ]
-        : [
-            {
-              type: "forward",
-              targetGroupArn: targetGroup.arn,
-            },
-          ],
+      port: 443,
+      protocol: "HTTPS",
+      certificateArn: certificate.arn,
+      sslPolicy: "ELBSecurityPolicy-TLS13-1-2-2021-06",
+      defaultActions: [
+        {
+          type: "forward",
+          targetGroupArn: targetGroup.arn,
+        },
+      ],
     });
-
-    // Create HTTPS listener if certificate exists
-    const httpsListener = certificate
-      ? new aws.lb.Listener("McpHttpsListener", {
-          loadBalancerArn: alb.arn,
-          port: 443,
-          protocol: "HTTPS",
-          certificateArn: certificate.arn,
-          sslPolicy: "ELBSecurityPolicy-TLS13-1-2-2021-06",
-          defaultActions: [
-            {
-              type: "forward",
-              targetGroupArn: targetGroup.arn,
-            },
-          ],
-        })
-      : undefined;
 
     // Create ECS task definition
     const taskRole = new aws.iam.Role("McpTaskRole", {
@@ -422,9 +389,7 @@ export default $config({
         ],
       },
       {
-        dependsOn: httpsListener
-          ? [httpListener, httpsListener]
-          : [httpListener],
+        dependsOn: [httpsListener],
       }
     );
 
@@ -434,7 +399,7 @@ export default $config({
         cidrBlock: vpc.cidrBlock,
       },
       service: {
-        loadBalancerUrl: $interpolate`http://${alb.dnsName}`,
+        loadBalancerUrl: $interpolate`https://${alb.dnsName}`,
         clusterName: cluster.name,
         serviceName: service.name,
       },
@@ -442,18 +407,12 @@ export default $config({
         public: [publicSubnet1.id, publicSubnet2.id],
       },
       urls: {
-        EXPRESS_SERVER_URL: certificate
-          ? $interpolate`https://${domainName}`
-          : $interpolate`http://${alb.dnsName}`,
-        HTTP_URL: $interpolate`http://${alb.dnsName}`,
-        HTTPS_URL: certificate
-          ? $interpolate`https://${domainName}`
-          : undefined,
+        EXPRESS_SERVER_URL: $interpolate`https://${process.env.DOMAIN_NAME}`,
+        HTTPS_URL: $interpolate`https://${process.env.DOMAIN_NAME}`,
       },
       ssl: {
-        enabled: !!certificate,
-        certificateArn: certificate?.arn,
-        domainName: domainName,
+        enabled: true,
+        certificateArn: certificate.arn,
       },
     };
   },

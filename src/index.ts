@@ -1,24 +1,25 @@
 import { config } from "./config.js";
 import { logger } from "./logger.js";
-import { createExpressApp } from "./express-server.js";
+import { createExpressApp, connectServer } from "./express-server.js";
 
 // Re-export for backward compatibility with webhookHandler
 export { logger };
 export { openaiClient, VECTOR_STORE_ID } from "./openai-client.js";
 
-
 const app = createExpressApp();
-
-export default app;
 
 /**
  * Main application entry point
  */
 async function main(): Promise<void> {
   try {
+    // Connect MCP server to transport before starting HTTP server
+    logger.info("Connecting MCP server to transport...");
+    await connectServer();
+
     logger.info("Server started successfully", {
       environment: config.environment.nodeEnv,
-      transport: "stdio + http",
+      transport: "stateless HTTP",
       httpPort: config.api.port,
     });
     const server = app.listen(config.api.port, () => {

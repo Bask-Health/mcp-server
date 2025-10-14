@@ -24,9 +24,10 @@ fi
 AWS_REGION="us-east-1"
 ECR_REPOSITORY="877508449792.dkr.ecr.us-east-1.amazonaws.com/mcp-server-app"
 IMAGE_TAG="latest"
+AWS_PROFILE="mcp"
 
 echo "🔐 Logging into ECR..."
-aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPOSITORY
+aws --region $AWS_REGION --profile $AWS_PROFILE ecr get-login-password | sudo docker login --username AWS --password-stdin $ECR_REPOSITORY
 
 if [ $? -ne 0 ]; then
     echo "❌ ECR login failed"
@@ -56,13 +57,13 @@ if [ $? -eq 0 ]; then
     echo "✅ Deployment successful!"
     echo ""
     echo "🌐 Your application will be available at:"
-    echo "   http://mcp-alb-1023053955.us-east-1.elb.amazonaws.com"
+    echo "   https://mcp.bask.fyi"
     echo ""
     echo "📊 Monitor deployment status with:"
-    echo "   aws ecs describe-services --cluster mcp-cluster --services mcp-service --region $AWS_REGION"
+    echo "   aws ecs describe-services --cluster mcp-cluster --services mcp-service --region $AWS_REGION --profile $AWS_PROFILE"
     echo ""
     echo "🔍 Watch the deployment progress:"
-    echo "   aws ecs wait services-stable --cluster mcp-cluster --services mcp-service --region $AWS_REGION"
+    echo "   aws ecs wait services-stable --cluster mcp-cluster --services mcp-service --region $AWS_REGION --profile $AWS_PROFILE"
 else
     echo "❌ ECS service update failed"
     exit 1

@@ -3,7 +3,7 @@
  * Used for conditional infrastructure provisioning in SST
  */
 
-export const SHARED_VPC_ID = "vpc-025628ba9088e0ec6";
+export const SHARED_VPC_ID = "vpc-069e0c571e5d6e74b";
 
 /**
  * Determines if the current stage should get permanent infrastructure

@@ -10,7 +10,7 @@ export function mcpAuthMiddleware(
 ): void {
   try {
     // Validate Authorization header
-    const authHeader = req.headers["authorization"] as string;
+    const authHeader = req.headers["authorization"] || req.headers["Authorization"] as string;
     if (!authHeader) {
       logger.warn("Missing Authorization header", {
         ip: req.ip,

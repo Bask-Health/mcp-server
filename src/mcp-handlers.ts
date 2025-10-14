@@ -213,64 +213,33 @@ export function createMcpServer(): McpServer {
     version: "1.0.0",
   });
 
-  // Define schemas with better validation
-  const searchSchema = z.object({
-    query: z
-      .string()
-      .min(2, "Query must be at least 2 characters long")
-      .max(500, "Query must be less than 500 characters")
-      .describe(
-        "Search query string. Natural language queries work best for semantic search."
-      ),
-  });
-
-  const fetchSchema = z.object({
-    id: z
-      .string()
-      .min(1, "ID cannot be empty")
-      .regex(
-        /^file-[a-zA-Z0-9]+$/,
-        "ID must be a valid OpenAI file ID (file-xxx)"
-      )
-      .describe("File ID from vector store (file-xxx format)"),
-  });
-
-  // Register tools with comprehensive schemas
-  server.registerTool(
+  server.tool(
     "search",
+    "Search for documents using OpenAI Vector Store semantic search. Returns a list of relevant documents with snippets.",
     {
-      title: "Search Documents",
-      description:
-        "Search for documents using OpenAI Vector Store semantic search. Returns a list of relevant documents with snippets.",
-      inputSchema: searchSchema.shape,
-      outputSchema: z.object({
-        results: z.array(
-          z.object({
-            id: z.string(),
-            title: z.string(),
-            text: z.string(),
-            url: z.string().optional(),
-          })
+      query: z
+        .string()
+        .min(2, "Query must be at least 2 characters long")
+        .max(500, "Query must be less than 500 characters")
+        .describe(
+          "Search query string. Natural language queries work best for semantic search."
         ),
-      }).shape,
     },
     handleSearch
   );
 
-  server.registerTool(
+  server.tool(
     "fetch",
+    "Fetch complete document content by file ID from the vector store.",
     {
-      title: "Fetch Document",
-      description:
-        "Fetch complete document content by file ID from the vector store.",
-      inputSchema: fetchSchema.shape,
-      outputSchema: z.object({
-        id: z.string(),
-        title: z.string(),
-        text: z.string(),
-        url: z.string(),
-        metadata: z.any().nullable(),
-      }).shape,
+      id: z
+        .string()
+        .min(1, "ID cannot be empty")
+        .regex(
+          /^file-[a-zA-Z0-9]+$/,
+          "ID must be a valid OpenAI file ID (file-xxx)"
+        )
+        .describe("File ID from vector store (file-xxx format)"),
     },
     handleFetch
   );

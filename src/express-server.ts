@@ -3,13 +3,33 @@ import helmet from "helmet";
 import cors from "cors";
 import { config } from "./config.js";
 import { logger } from "./logger.js";
-import {
-  mcpAuthMiddleware,
-  errorHandler,
-} from "./middleware.js";
+import { mcpAuthMiddleware, errorHandler } from "./middleware.js";
 import { vectorStoreUpdater } from "./webhookHandler.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
-import { mcpServer, transports } from "./mcp-server.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { createMcpServer } from "./mcp-handlers.js";
+
+// Initialize single MCP server and transport (stateless)
+const mcpServer = createMcpServer();
+const transport = new StreamableHTTPServerTransport({
+  sessionIdGenerator: undefined, // stateless server
+});
+
+// Connect server to transport once at startup
+let serverConnected = false;
+const connectServer = async () => {
+  if (!serverConnected) {
+    try {
+      await mcpServer.connect(transport);
+      logger.info("MCP server connected to transport successfully");
+      serverConnected = true;
+    } catch (error) {
+      logger.error("Failed to connect MCP server to transport", {
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
+      throw error;
+    }
+  }
+};
 
 export function createExpressApp(): express.Application {
   const app = express();
@@ -130,51 +150,66 @@ export function createExpressApp(): express.Application {
     });
   });
 
-  // Main MCP endpoint
-  app.get("/mcp", mcpAuthMiddleware, async (req, res) => {
-    const transport = new SSEServerTransport("/messages", res);
-    transports[transport.sessionId] = transport;
-
-    console.log(
-      `SSE connection established. Session ID: ${transport.sessionId}`
-    );
-
-    res.on("close", () => {
-      console.log(`SSE connection closed. Session ID: ${transport.sessionId}`);
-      delete transports[transport.sessionId];
+  // GET /mcp - Method not allowed (OpenAI MCP uses POST only)
+  app.get("/mcp", mcpAuthMiddleware, (req, res) => {
+    logger.info("GET /mcp request received (method not allowed)", {
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
     });
+    res.status(405).json({
+      jsonrpc: "2.0",
+      error: {
+        code: -32000,
+        message: "Method not allowed. Use POST /mcp for MCP requests.",
+      },
+      id: null,
+    });
+  });
+
+  // POST /mcp - Handle MCP messages (stateless HTTP transport)
+  app.post("/mcp", mcpAuthMiddleware, async (req, res) => {
+    logger.info("POST /mcp request received", {
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
+      bodyPreview: JSON.stringify(req.body).substring(0, 200),
+    });
+
     try {
-      await mcpServer.connect(transport);
-      console.log(
-        `Transport connected to MCP server. Session ID: ${transport.sessionId}`
-      );
+      // Use the single stateless transport instance
+      await transport.handleRequest(req, res, req.body);
+      logger.info("POST /mcp request handled successfully");
     } catch (error) {
-      console.error(
-        `Error connecting transport to MCP server. Session ID: ${transport.sessionId}`,
-        error
-      );
+      logger.error("Error handling POST /mcp request", {
+        error: error instanceof Error ? error.message : "Unknown error",
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32603,
+            message: "Internal server error",
+            data: error instanceof Error ? error.message : "Unknown error",
+          },
+          id: null,
+        });
+      }
     }
   });
 
-  app.post("/messages", mcpAuthMiddleware, async (req, res) => {
-    const sessionId = req.query.sessionId as string;
-    const transport = transports[sessionId] ?? Object.values(transports)[0];
-
-    if (transport) {
-      console.log(`Handling message for Session ID: ${sessionId}`);
-      try {
-        await transport.handlePostMessage(req, res);
-      } catch (error) {
-        console.error(
-          `Error handling message for Session ID: ${sessionId}`,
-          error
-        );
-        res.status(500).send("Internal Server Error");
-      }
-    } else {
-      console.error(`No transport found for Session ID: ${sessionId}`);
-      res.status(400).send("No transport found for sessionId");
-    }
+  // DELETE /mcp - Method not allowed
+  app.delete("/mcp", mcpAuthMiddleware, (req, res) => {
+    logger.info("DELETE /mcp request received (method not allowed)", {
+      ip: req.ip,
+    });
+    res.status(405).json({
+      jsonrpc: "2.0",
+      error: {
+        code: -32000,
+        message: "Method not allowed",
+      },
+      id: null,
+    });
   });
 
   // Webhook endpoint for repository updates
@@ -228,3 +263,6 @@ export function createExpressApp(): express.Application {
 
   return app;
 }
+
+// Export connectServer for startup initialization
+export { connectServer };
