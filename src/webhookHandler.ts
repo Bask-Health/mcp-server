@@ -558,7 +558,7 @@ export class BatchProcessor {
             // Upload new file (filename is taken from the temp file's name)
             const uploadedFile = await openai.files.create({
               file: fs.createReadStream(tempPath),
-              purpose: "user_data",
+              purpose: "user_data", // TODO: Remove all current files then use "evals" instead because user_data cant be fetched by mcp
             });
             // Add to vector store
             await openai.vectorStores.files.create(vectorStoreId, {
