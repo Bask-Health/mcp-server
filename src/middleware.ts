@@ -9,33 +9,6 @@ export function mcpAuthMiddleware(
   next: express.NextFunction
 ): void {
   try {
-    // Validate MCP protocol version
-    const protocolVersion = req.headers["mcp-protocol-version"] as string;
-    if (!protocolVersion) {
-      logger.warn("Missing mcp-protocol-version header", {
-        ip: req.ip,
-        userAgent: req.headers["user-agent"],
-        url: req.url,
-      });
-      respondWithError(res, 400, -32600, "Missing mcp-protocol-version header");
-      return;
-    }
-
-    if (protocolVersion !== "2024-11-05") {
-      logger.warn("Invalid mcp-protocol-version", {
-        version: protocolVersion,
-        ip: req.ip,
-        url: req.url,
-      });
-      respondWithError(
-        res,
-        400,
-        -32600,
-        `Invalid mcp-protocol-version: ${protocolVersion}. Expected: 2024-11-05`
-      );
-      return;
-    }
-
     // Validate Authorization header
     const authHeader = req.headers["authorization"] as string;
     if (!authHeader) {
@@ -83,7 +56,6 @@ export function mcpAuthMiddleware(
 
     logger.debug("MCP authentication successful", {
       ip: req.ip,
-      protocolVersion,
       url: req.url,
     });
 
