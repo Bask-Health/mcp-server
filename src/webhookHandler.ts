@@ -833,89 +833,87 @@ class OpenAIVectorStoreUpdater {
           timestamp: new Date().toISOString(),
         });
       }
-
+      
       // Process webhook asynchronously to prevent blocking
-      setImmediate(async () => {
-        try {
-          const payload = req.body?.payload
-            ? JSON.stringify(req.body.payload)
-            : JSON.stringify(req.body);
+      try {
+        const payload = req.body?.payload
+          ? JSON.stringify(req.body.payload)
+          : JSON.stringify(req.body);
 
-          // Verify GitHub signature
-          if (!signature) {
-            logger.warn("Missing GitHub signature", { ip: clientIp });
-            return;
-          }
-
-          const isValidSignature = await this.verifySignature(
-            config.webhook.github.webhookSecret,
-            signature,
-            payload
-          );
-
-          if (!isValidSignature) {
-            logger.warn(`Invalid signature from IP: ${clientIp}`);
-            return;
-          }
-
-          logger.info("Webhook signature verified", { ip: clientIp });
-
-          const webhookPayload = req.body?.payload
-            ? (req.body.payload as WebhookPayload)
-            : (req.body as WebhookPayload);
-
-          // Only process main branch changes
-          if (webhookPayload.ref && !webhookPayload.ref.endsWith("/main")) {
-            logger.info("Ignoring non-main branch webhook", {
-              ref: webhookPayload.ref,
-            });
-            return;
-          }
-
-          logger.info("Processing webhook for repository", {
-            repository: webhookPayload.repository?.full_name,
-            ref: webhookPayload.ref,
-            commits: webhookPayload.commits?.length || 0,
-          });
-
-          // Get changed files
-          const changedFiles = await this.getChangedFiles(webhookPayload);
-          logger.info(`Found ${changedFiles.length} changed supported files`);
-
-          if (changedFiles.length === 0) {
-            return;
-          }
-
-          // Add job to queue
-          const priority = this.calculatePriority(changedFiles);
-          const jobId = this.jobQueue.addJob({
-            repository: webhookPayload.repository.full_name,
-            files: changedFiles,
-            priority,
-          });
-
-          const duration = Date.now() - startTime;
-          logger.info("Webhook processing completed", {
-            jobId,
-            fileCount: changedFiles.length,
-            duration: `${duration}ms`,
-          });
-        } catch (processingError) {
-          const duration = Date.now() - startTime;
-          logger.error("Webhook async processing error", {
-            error:
-              processingError instanceof Error
-                ? processingError.message
-                : "Unknown error",
-            stack:
-              processingError instanceof Error
-                ? processingError.stack
-                : undefined,
-            duration: `${duration}ms`,
-            ip: clientIp,
-          });
+        // Verify GitHub signature
+        if (!signature) {
+          logger.warn("Missing GitHub signature", { ip: clientIp });
+          return;
         }
-      });
+
+        const isValidSignature = await this.verifySignature(
+          config.webhook.github.webhookSecret,
+          signature,
+          payload
+        );
+
+        if (!isValidSignature) {
+          logger.warn(`Invalid signature from IP: ${clientIp}`);
+          return;
+        }
+
+        logger.info("Webhook signature verified", { ip: clientIp });
+
+        const webhookPayload = req.body?.payload
+          ? (req.body.payload as WebhookPayload)
+          : (req.body as WebhookPayload);
+
+        // Only process main branch changes
+        if (webhookPayload.ref && !webhookPayload.ref.endsWith("/main")) {
+          logger.info("Ignoring non-main branch webhook", {
+            ref: webhookPayload.ref,
+          });
+          return;
+        }
+
+        logger.info("Processing webhook for repository", {
+          repository: webhookPayload.repository?.full_name,
+          ref: webhookPayload.ref,
+          commits: webhookPayload.commits?.length || 0,
+        });
+
+        // Get changed files
+        const changedFiles = await this.getChangedFiles(webhookPayload);
+        logger.info(`Found ${changedFiles.length} changed supported files`);
+
+        if (changedFiles.length === 0) {
+          return;
+        }
+
+        // Add job to queue
+        const priority = this.calculatePriority(changedFiles);
+        const jobId = this.jobQueue.addJob({
+          repository: webhookPayload.repository.full_name,
+          files: changedFiles,
+          priority,
+        });
+
+        const duration = Date.now() - startTime;
+        logger.info("Webhook processing completed", {
+          jobId,
+          fileCount: changedFiles.length,
+          duration: `${duration}ms`,
+        });
+      } catch (processingError) {
+        const duration = Date.now() - startTime;
+        logger.error("Webhook async processing error", {
+          error:
+            processingError instanceof Error
+              ? processingError.message
+              : "Unknown error",
+          stack:
+            processingError instanceof Error
+              ? processingError.stack
+              : undefined,
+          duration: `${duration}ms`,
+          ip: clientIp,
+        });
+      }
     } catch (error) {
       const duration = Date.now() - startTime;
       logger.error("Webhook handler error", {

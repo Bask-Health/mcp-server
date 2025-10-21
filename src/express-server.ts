@@ -215,7 +215,6 @@ export function createExpressApp(): express.Application {
   // Webhook endpoint for repository updates
   app.post(
     "/webhook",
-    express.raw({ type: "application/json" }),
     (req, res) => {
       try {
         vectorStoreUpdater.handleWebhook(req, res);
